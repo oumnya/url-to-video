@@ -52,6 +52,13 @@ function getStartRecordingCommand(width, height, duration, filename) {
 async function fireChrome(url, width, height) {
   console.log(`Launching Chrome for URL: ${url}`);
   try {
+    // Kill any existing Chrome instances
+    try {
+      await exec('pkill chrome');
+    } catch (e) {
+      console.log('No existing Chrome process to kill');
+    }
+
     const chromeCmd = getStartChromeCommand(width, height);
     console.log('Chrome command:', chromeCmd);
     
@@ -82,24 +89,23 @@ async function fireChrome(url, width, height) {
   }
 }
 
-
 async function fireRecorder(width, height, duration, filename) {
   console.log('Starting recorder...');
   try {
     const cmd = getStartRecordingCommand(width, height, duration, filename);
     console.log('FFmpeg command:', cmd);
     
-    const process = exec(cmd);
-    console.log('FFmpeg process started');
-
-    // Add timeout for recording
-    const timeout = duration * 1000 + 5000; // Duration plus 5 seconds buffer
-    const timeoutPromise = new Promise((_, reject) => {
-      setTimeout(() => reject(new Error('Recording timeout')), timeout);
+    return new Promise((resolve, reject) => {
+      exec(cmd)
+        .then(() => {
+          console.log('Recording completed successfully');
+          resolve();
+        })
+        .catch(error => {
+          console.error('Recording error:', error);
+          reject(error);
+        });
     });
-
-    await Promise.race([process, timeoutPromise]);
-    console.log('Recording completed');
   } catch (error) {
     console.error('Error in fireRecorder:', error);
     throw error;
@@ -127,7 +133,7 @@ app.post('/api/record', async (req, res) => {
     try {
       await exec('pgrep chrome || pgrep ffmpeg');
       return res.status(409).json({ error: 'A recording is already in progress' });
-    } catch {
+    } catch (error) {
       // No existing processes, continue
     }
 
@@ -150,14 +156,14 @@ app.post('/api/record', async (req, res) => {
     if (client) {
       try {
         await client.close();
-      } catch (e) {
-        console.log('Error closing CDP client:', e);
+      } catch (error) {
+        console.log('Error closing CDP client:', error);
       }
     }
     try {
       await exec('pkill chrome; pkill ffmpeg');
-    } catch (e) {
-      console.log('Cleanup error:', e);
+    } catch (error) {
+      console.log('Cleanup error:', error);
     }
   }
 });
@@ -167,7 +173,7 @@ app.get('/api/status', async (req, res) => {
   try {
     await exec('pgrep chrome || pgrep ffmpeg');
     res.json({ status: 'recording' });
-  } catch {
+  } catch (error) {
     res.json({ status: 'idle' });
   }
 });
