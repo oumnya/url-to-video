@@ -14,20 +14,19 @@ function getStartChromeCommand(width, height) {
     '--headless',
     '--disable-gpu',
     '--disable-software-rasterizer',
-    '--disable-dev-shm-usage',
     '--no-sandbox',
     `--window-size=${width},${height}`,
     '--remote-debugging-port=9222',
     '--no-first-run',
     '--no-default-browser-check',
     '--disable-features=TranslateUI',
+    '--disable-dev-shm-usage',
     '--disable-extensions',
     '--mute-audio',
     '--disable-setuid-sandbox',
-    '--disable-dev-shm-usage',
     '--disable-accelerated-2d-canvas',
-    '--no-zygote',
-    '--single-process'
+    '--disable-notifications',
+    '--disable-dbus'  // Add this to disable D-Bus dependency
   ];
 }
 
