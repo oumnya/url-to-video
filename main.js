@@ -10,85 +10,110 @@ app.use(express.json());
 const opts = {
   resources: ['tcp:localhost:9222'],
   interval: 100,
-  tcpTimeout: 100
+  tcpTimeout: 1000,
+  timeout: 10000
 };
 
 function getStartChromeCommand(width, height) {
-  return 'DISPLAY=:1.0 /bin/sh -c ' +
-    '"/opt/google/chrome/google-chrome ' +
-    '--window-position=0,0 ' +
-    `--window-size=${width + 1},${height + 1} ` +
-    '--remote-debugging-port=9222 ' +
-    '--no-first-run ' +
-    '--no-default-browser-check ' +
-    '--start-fullscreen ' +
-    '--kiosk ' +
-    '--disable-gpu ' +
-    '--no-sandbox ' +
-    '--disable-extensions ' +
-    '--autoplay-policy=no-user-gesture-required ' +
-    '--allow-running-insecure-content ' +
-    '--disable-features=TranslateUI ' +
-    '--disable-dev-shm-usage"';
+  return `google-chrome \
+    --headless \
+    --disable-gpu \
+    --disable-software-rasterizer \
+    --disable-dev-shm-usage \
+    --no-sandbox \
+    --window-size=${width},${height} \
+    --remote-debugging-port=9222 \
+    --no-first-run \
+    --no-default-browser-check \
+    --disable-features=TranslateUI \
+    --disable-extensions \
+    --mute-audio`;
 }
 
 function getStartRecordingCommand(width, height, duration, filename) {
-  return 'ffmpeg -y ' +
-    '-f x11grab ' +
-    '-draw_mouse 0 ' +
-    `-s ${width}x${height} ` +
-    '-thread_queue_size 4096 ' +
-    '-i :1 ' +
-    '-f alsa ' +
-    '-i default ' +
-    '-c:v libx264 ' +
-    '-tune zerolatency ' +
-    '-preset ultrafast ' +
-    '-v info ' +
-    '-bufsize 5952k ' +
-    '-acodec aac ' +
-    '-pix_fmt yuv420p ' +
-    '-r 30 ' +
-    '-crf 17 ' +
-    '-g 60 ' +
-    '-strict -2 ' +
-    '-ar 44100 ' +
-    `-t ${duration} ` +
-    `/recordings/${filename}`;
+  return `ffmpeg -y \
+    -f x11grab \
+    -draw_mouse 0 \
+    -s ${width}x${height} \
+    -r 30 \
+    -i :1 \
+    -f alsa \
+    -i default \
+    -c:v libx264 \
+    -preset ultrafast \
+    -pix_fmt yuv420p \
+    -crf 17 \
+    -c:a aac \
+    -strict experimental \
+    -t ${duration} \
+    /recordings/${filename}`;
 }
 
 async function fireChrome(url, width, height) {
-  await exec(getStartChromeCommand(width, height));
-  await waitOn(opts);
-  const client = await CDP();
-  const { Network, Page } = client;
+  console.log(`Launching Chrome for URL: ${url}`);
+  try {
+    const chromeCmd = getStartChromeCommand(width, height);
+    console.log('Chrome command:', chromeCmd);
+    
+    await exec(chromeCmd);
+    console.log('Chrome process started');
 
-  Network.requestWillBeSent((params) => {
-    console.log(`Requested URL: ${params.request.url}`);
-  });
+    await waitOn(opts);
+    console.log('Chrome debugging port ready');
 
-  await Network.enable();
-  await Page.enable();
-  await Page.navigate({ url });
-  await Page.loadEventFired();
-  console.log('All assets are loaded');
-  
-  return client;
+    const client = await CDP();
+    const { Network, Page } = client;
+
+    await Network.enable();
+    await Page.enable();
+    
+    console.log('Navigating to URL...');
+    await Page.navigate({ url });
+    await Page.loadEventFired();
+    console.log('Page loaded successfully');
+
+    // Wait for network idle
+    await new Promise(resolve => setTimeout(resolve, 2000));
+    
+    return client;
+  } catch (error) {
+    console.error('Error in fireChrome:', error);
+    throw error;
+  }
 }
+
 
 async function fireRecorder(width, height, duration, filename) {
-  console.log('Firing recorder');
-  await exec(getStartRecordingCommand(width, height, duration, filename));
-  console.log('Recording completed');
+  console.log('Starting recorder...');
+  try {
+    const cmd = getStartRecordingCommand(width, height, duration, filename);
+    console.log('FFmpeg command:', cmd);
+    
+    const process = exec(cmd);
+    console.log('FFmpeg process started');
+
+    // Add timeout for recording
+    const timeout = duration * 1000 + 5000; // Duration plus 5 seconds buffer
+    const timeoutPromise = new Promise((_, reject) => {
+      setTimeout(() => reject(new Error('Recording timeout')), timeout);
+    });
+
+    await Promise.race([process, timeoutPromise]);
+    console.log('Recording completed');
+  } catch (error) {
+    console.error('Error in fireRecorder:', error);
+    throw error;
+  }
 }
 
-// REST API endpoints
 app.post('/api/record', async (req, res) => {
+  console.log('Received recording request:', req.body);
+  
   const {
     url,
-    width = process.env.OUTPUT_VIDEO_WIDTH || 1280,
-    height = process.env.OUTPUT_VIDEO_HEIGHT || 720,
-    duration = 60,
+    width = parseInt(process.env.OUTPUT_VIDEO_WIDTH) || 1280,
+    height = parseInt(process.env.OUTPUT_VIDEO_HEIGHT) || 720,
+    duration = 10,
     filename = `recording-${Date.now()}.mp4`
   } = req.body;
 
@@ -96,54 +121,57 @@ app.post('/api/record', async (req, res) => {
     return res.status(400).json({ error: 'URL is required' });
   }
 
+  let client;
   try {
-    let client;
+    // Check if Chrome or ffmpeg is already running
     try {
-      client = await fireChrome(url, width, height);
-      await fireRecorder(width, height, duration, filename);
-      
-      res.json({
-        status: 'success',
-        filename,
-        message: 'Recording completed successfully'
-      });
-    } finally {
-      if (client) {
-        await client.close();
-      }
-      // Cleanup Chrome process
-      try {
-        await exec('pkill chrome');
-      } catch (e) {
-        console.log('Chrome cleanup error:', e);
-      }
+      await exec('pgrep chrome || pgrep ffmpeg');
+      return res.status(409).json({ error: 'A recording is already in progress' });
+    } catch {
+      // No existing processes, continue
     }
+
+    client = await fireChrome(url, width, height);
+    await fireRecorder(width, height, duration, filename);
+    
+    res.json({
+      status: 'success',
+      filename,
+      message: 'Recording completed successfully'
+    });
   } catch (error) {
     console.error('Recording failed:', error);
     res.status(500).json({
       status: 'error',
-      error: error.message
+      error: error.message,
+      details: error.stack
     });
+  } finally {
+    if (client) {
+      try {
+        await client.close();
+      } catch (e) {
+        console.log('Error closing CDP client:', e);
+      }
+    }
+    try {
+      await exec('pkill chrome; pkill ffmpeg');
+    } catch (e) {
+      console.log('Cleanup error:', e);
+    }
   }
 });
 
-// Get list of recordings
-app.get('/api/recordings', async (req, res) => {
+// Add a status endpoint
+app.get('/api/status', async (req, res) => {
   try {
-    const { stdout } = await exec('ls -l /recordings');
-    res.json({
-      status: 'success',
-      recordings: stdout.split('\n').filter(Boolean)
-    });
-  } catch (error) {
-    res.status(500).json({
-      status: 'error',
-      error: error.message
-    });
+    await exec('pgrep chrome || pgrep ffmpeg');
+    res.json({ status: 'recording' });
+  } catch {
+    res.json({ status: 'idle' });
   }
 });
 
-// Start the server
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Video recorder API running on port ${PORT}`);

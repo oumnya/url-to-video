@@ -1,52 +1,68 @@
 FROM ubuntu:bionic
 
-LABEL maintainer="omar.trigui.tn@gmail.com"
+ENV OUTPUT_VIDEO_WIDTH=1280
+ENV OUTPUT_VIDEO_HEIGHT=720
 
-ENV OUTPUT_VIDEO_WIDTH 1280
-ENV OUTPUT_VIDEO_HEIGHT 720
-
+# Add s6-overlay
 ADD https://github.com/just-containers/s6-overlay/releases/download/v2.0.0.1/s6-overlay-amd64.tar.gz /tmp/
 RUN tar xzf /tmp/s6-overlay-amd64.tar.gz -C / && \
     rm /tmp/s6-overlay-amd64.tar.gz
 
-RUN useradd apps
-
-RUN mkdir -p /home/apps && \
+# Create apps user
+RUN useradd apps && \
+    mkdir -p /home/apps && \
     chown apps:apps /home/apps
 
+# Install dependencies
 RUN apt-get update && \
-    apt-get --no-install-recommends install -yqq \
+    apt-get install -y --no-install-recommends \
     wget \
     software-properties-common \
     curl \
-    gpg-agent
-
-RUN add-apt-repository ppa:mc3man/bionic-prop && \
-    curl -sL https://deb.nodesource.com/setup_14.x | bash - && \
-    wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | apt-key add - && \
-    echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" >> /etc/apt/sources.list.d/google-chrome.list
-
-RUN apt-get update && \
-    apt-get install -yqq \
-    nodejs \
-    ffmpeg \
-    google-chrome-stable \
+    gpg-agent \
+    dbus \
+    dbus-x11 \
     xvfb \
-    pulseaudio
+    pulseaudio \
+    ffmpeg \
+    nodejs \
+    npm \
+    libnss3 \
+    libgconf-2-4 \
+    libasound2 \
+    && rm -rf /var/lib/apt/lists/*
 
-COPY package.json /app/
+# Install Chrome
+RUN wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | apt-key add - && \
+    echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list && \
+    apt-get update && \
+    apt-get install -y google-chrome-stable && \
+    rm -rf /var/lib/apt/lists/*
 
-WORKDIR /app/
+# Create necessary directories
+RUN mkdir -p /recordings && \
+    mkdir -p /var/run/dbus && \
+    mkdir -p /run/dbus && \
+    chown apps:apps /recordings
 
-RUN npm install && \
-    npm audit fix
-
+# Copy application files
+WORKDIR /app
+COPY package*.json ./
+RUN npm install
 COPY . .
 
-RUN apt-get purge curl gpg-agent -y && \
-    apt-get clean -y && \
+# Set up dbus
+RUN dbus-uuidgen > /var/lib/dbus/machine-id
+
+# Cleanup unnecessary packages
+RUN apt-get purge -y curl gpg-agent && \
     apt-get autoremove -y && \
-    rm -rf /var/lib/apt/lists/*
+    apt-get clean
+
+ENV DBUS_SESSION_BUS_ADDRESS=unix:path=/var/run/dbus/system_bus_socket
+
+VOLUME ["/recordings"]
+EXPOSE 3000
 
 ENTRYPOINT ["/init"]
 CMD ["/app/entrypoint.sh"]
