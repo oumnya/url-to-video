@@ -37,16 +37,29 @@ function getStartRecordingCommand(width, height, duration, filename) {
     -s ${width}x${height} \
     -r 30 \
     -i :1 \
-    -f alsa \
+    -f pulse \
+    -ac 2 \
     -i default \
+    -acodec aac \
+    -strict experimental \
     -c:v libx264 \
     -preset ultrafast \
     -pix_fmt yuv420p \
-    -crf 17 \
-    -c:a aac \
-    -strict experimental \
+    -movflags +faststart \
+    -crf 23 \
     -t ${duration} \
     /recordings/${filename}`;
+}
+
+async function setupPulseAudio() {
+  try {
+    await exec('pulseaudio -D --system');
+    await exec('pacmd load-module module-null-sink sink_name=DummyOutput');
+    await exec('pacmd set-default-sink DummyOutput');
+    console.log('PulseAudio setup completed');
+  } catch (error) {
+    console.log('PulseAudio setup error (non-fatal):', error);
+  }
 }
 
 async function waitForPort(port, timeout) {
@@ -140,19 +153,51 @@ async function fireChrome(url, width, height) {
 async function fireRecorder(width, height, duration, filename) {
   console.log('Starting recorder...');
   try {
+    await setupPulseAudio();
     const cmd = getStartRecordingCommand(width, height, duration, filename);
     console.log('FFmpeg command:', cmd);
     
-    const process = exec(cmd);
-    const timeout = new Promise((_, reject) => 
-      setTimeout(() => reject(new Error('Recording timeout')), (duration + 5) * 1000)
-    );
-    
-    await Promise.race([process, timeout]);
-    console.log('Recording completed successfully');
+    return new Promise((resolve, reject) => {
+      const ffmpeg = exec(cmd);
+      
+      ffmpeg.stdout.on('data', (data) => {
+        console.log('FFmpeg stdout:', data);
+      });
+      
+      ffmpeg.stderr.on('data', (data) => {
+        console.log('FFmpeg stderr:', data);
+      });
+      
+      ffmpeg.on('close', (code) => {
+        if (code === 0) {
+          console.log('Recording completed successfully');
+          resolve();
+        } else {
+          console.error('FFmpeg exited with code:', code);
+          reject(new Error(`FFmpeg exited with code ${code}`));
+        }
+      });
+
+      // Set timeout
+      setTimeout(() => {
+        ffmpeg.kill();
+        resolve();
+      }, (duration + 2) * 1000);
+    });
   } catch (error) {
     console.error('Error in fireRecorder:', error);
     throw error;
+  }
+}
+
+async function cleanup() {
+  try {
+    await exec('pkill -f chrome || true');
+    await exec('pkill -f ffmpeg || true');
+    await exec('pkill -f Xvfb || true');
+    await exec('pkill -f pulseaudio || true');
+  } catch (error) {
+    console.log('Cleanup warning (non-fatal):', error);
   }
 }
 
@@ -196,11 +241,7 @@ app.post('/api/record', async (req, res) => {
         console.log('Error closing CDP client:', error);
       }
     }
-    try {
-      await exec('pkill chrome; pkill ffmpeg');
-    } catch (error) {
-      console.log('Cleanup error:', error);
-    }
+    await cleanup();
   }
 });
 

@@ -43,7 +43,12 @@ launch_xvfb() {
 }
 
 launch_pulseaudio() {
+    # Start PulseAudio in system mode
     pulseaudio --system --disallow-exit --disallow-module-loading --daemonize --exit-idle-time=-1
+    sleep 1
+    # Set up audio null sink
+    pacmd load-module module-null-sink sink_name=DummyOutput || true
+    pacmd set-default-sink DummyOutput || true
 }
 
 launch_recorder() {
