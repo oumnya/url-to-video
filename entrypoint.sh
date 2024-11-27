@@ -1,6 +1,11 @@
 #!/bin/bash
 set -euxo pipefail
 
+export OUTPUT_VIDEO_WIDTH=${OUTPUT_VIDEO_WIDTH:-1280}
+export OUTPUT_VIDEO_HEIGHT=${OUTPUT_VIDEO_HEIGHT:-720}
+export XVFB_DISPLAY=${XVFB_DISPLAY:-:1}
+export XVFB_SCREEN=${XVFB_SCREEN:-0}
+
 main() {
   log_i "Starting pulseaudio server"
   launch_pulseaudio
@@ -38,7 +43,7 @@ launch_xvfb() {
 }
 
 launch_pulseaudio() {
-  pulseaudio -D --exit-idle-time=-1
+    pulseaudio --system --disallow-exit --disallow-module-loading --daemonize --exit-idle-time=-1
 }
 
 launch_recorder() {
